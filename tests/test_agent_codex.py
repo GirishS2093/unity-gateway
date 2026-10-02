@@ -2334,25 +2334,51 @@ class TestVSCodeExtension:
 
         return tomllib.loads(path.read_text(encoding="utf-8"))
 
-    def test_write_tool_config_hands_over_the_admin_default(self, monkeypatch):
-        seen: list[dict] = []
-        monkeypatch.setattr(codex, "configure_vscode_extension", seen.append)
+    def _handover(self, monkeypatch, **write_kwargs) -> tuple[dict, dict]:
+        seen: list[tuple[dict, dict]] = []
+        monkeypatch.setattr(
+            codex, "configure_vscode_extension", lambda gateway, **kw: seen.append((gateway, kw))
+        )
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.155.0")
         monkeypatch.setattr(codex, "save_state", lambda state: None)
-
         codex.write_tool_config(
-            {"workspace": WS, "codex_default_model": "system.ai.gpt-5-6-sol"},
-            provider="main.team.openai",
+            {"workspace": WS, "codex_default_model": "system.ai.gpt-5-6-sol"}, **write_kwargs
         )
+        ((gateway, kwargs),) = seen
+        return gateway, kwargs
 
-        (gateway,) = seen
+    def test_write_tool_config_hands_over_the_admin_default(self, monkeypatch):
+        gateway, kwargs = self._handover(monkeypatch)
+
         assert gateway["model_provider"] == "Databricks"
         assert gateway["model"] == "system.ai.gpt-5-6-sol"
         provider = gateway["model_providers"]["Databricks"]
         assert provider["base_url"] == _GATEWAY_URL
-        # Like the machine-wide file: launch-scoped routing headers stay out of shared config.
         assert codex.MODEL_PROVIDER_SERVICE_HEADER not in provider["http_headers"]
         assert "model_catalog_json" not in gateway
+        assert kwargs["provider_service"] is None
+
+    def test_write_tool_config_hands_over_the_provider_header(self, monkeypatch):
+        # `ug codex` adds this header at launch; the extension never launches through ug, so
+        # without it in the copy its requests skip the provider (seen with a managed Azure one).
+        gateway, kwargs = self._handover(monkeypatch, provider="main.team.openai")
+
+        headers = gateway["model_providers"]["Databricks"]["http_headers"]
+        assert headers[codex.MODEL_PROVIDER_SERVICE_HEADER] == "main.team.openai"
+        assert kwargs["provider_service"] == "main.team.openai"
+        assert kwargs["parent_schema"] is None
+        # ug's own files still keep launch routing headers out.
+        assert codex.MODEL_PROVIDER_SERVICE_HEADER not in read_toml_safe(codex.CODEX_CONFIG_PATH)[
+            "model_providers"
+        ]["Databricks"].get("http_headers", {})
+
+    def test_write_tool_config_hands_over_the_parent_schema_header(self, monkeypatch):
+        gateway, kwargs = self._handover(monkeypatch, parent_schema="main.models")
+
+        headers = gateway["model_providers"]["Databricks"]["http_headers"]
+        assert headers[codex.MODEL_SERVICE_PARENT_SCHEMA_HEADER] == "main.models"
+        assert kwargs["parent_schema"] == "main.models"
+        assert kwargs["provider_service"] is None
 
     def test_adds_gateway_keys_and_keeps_user_settings(self, paths, messages):
         codex.configure_vscode_extension(_gateway())
@@ -2494,6 +2520,76 @@ class TestVSCodeExtension:
         assert codex.revert_vscode_extension() == "unchanged"
         assert paths.read_text(encoding="utf-8") == switched
         assert not codex._vscode_record_path().exists()
+
+    def _routed(self, provider="main.team.openai") -> dict:
+        gateway = _gateway()
+        gateway["model_providers"]["Databricks"]["http_headers"][
+            codex.MODEL_PROVIDER_SERVICE_HEADER
+        ] = provider
+        return gateway
+
+    def test_publishes_the_providers_model_list(self, paths, monkeypatch):
+        catalog = {"models": [{"slug": "gpt-6.1-sol"}]}
+        calls: dict = {}
+        monkeypatch.setattr(codex, "_launch_token", lambda state, workspace: "tok")
+
+        def fetch(workspace, token, *, source, identifier):
+            calls["fetch"] = (workspace, token, source, identifier)
+            return catalog
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fetch)
+        monkeypatch.setattr(codex, "validate_codex_catalog", lambda binary, value: None)
+        monkeypatch.setattr(codex, "sync_app_model_catalog", lambda value: calls.update(sync=value))
+
+        codex.configure_vscode_extension(
+            self._routed(), state={"workspace": WS}, provider_service="main.team.openai"
+        )
+
+        assert calls["fetch"] == (WS, "tok", codex.CodexCatalogSource.PROVIDER, "main.team.openai")
+        assert calls["sync"] is catalog
+        headers = self._load(paths)["model_providers"]["Databricks"]["http_headers"]
+        assert headers[codex.MODEL_PROVIDER_SERVICE_HEADER] == "main.team.openai"
+
+    def test_model_list_failure_warns_and_still_points_at_the_gateway(
+        self, paths, monkeypatch, messages
+    ):
+        monkeypatch.setattr(codex, "_launch_token", lambda state, workspace: "tok")
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("HTTP 503")
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fail)
+        codex.configure_vscode_extension(
+            self._routed(), state={"workspace": WS}, provider_service="main.team.openai"
+        )
+
+        assert "HTTP 503" in messages["warning"][0]
+        assert self._load(paths)["model_provider"] == "Databricks"
+
+    def test_dry_run_fetches_no_model_list(self, paths, monkeypatch):
+        from ucode import config_io
+
+        monkeypatch.setattr(config_io, "_dry_run", True)
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda *a, **k: pytest.fail("fetched in dry run")
+        )
+        codex.configure_vscode_extension(
+            self._routed(), state={"workspace": WS}, provider_service="main.team.openai"
+        )
+        assert paths.read_text(encoding="utf-8") == _USER_CONFIG
+
+    def test_machine_wide_config_without_the_routing_header_does_not_count(
+        self, paths, monkeypatch, tmp_path
+    ):
+        # ug writes the machine-wide file without launch routing headers, so with a provider the
+        # extension still needs the user copy.
+        managed = tmp_path / "etc" / "managed_config.toml"
+        managed.parent.mkdir()
+        managed.write_text(_GATEWAY_TOML, encoding="utf-8")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed)
+        codex.configure_vscode_extension(self._routed())
+        headers = self._load(paths)["model_providers"]["Databricks"]["http_headers"]
+        assert headers[codex.MODEL_PROVIDER_SERVICE_HEADER] == "main.team.openai"
 
     def test_adopts_gateway_keys_added_by_hand(self, paths):
         # e.g. from a hand-run script before ug did this itself.

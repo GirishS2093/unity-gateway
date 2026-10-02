@@ -146,6 +146,11 @@ a ChatGPT sign-in. There's no VS Code setting to change for it:
   sets up Codex and, if any VS Code profile (or the VS Code Server) has the extension, adds
   the same keys to `~/.codex/config.toml`: `model_provider = "Databricks"`, the admin's
   default `model`, and `[model_providers.Databricks]`. Plain `codex` uses them too.
+- When Codex's models come from a Model Provider Service or a Unity Catalog schema (set by
+  your admin or with `--provider`), the copy also carries that routing header, which
+  `ug codex` otherwise adds only at launch, and `ug configure` publishes that source's model
+  list for the extension. The machine-wide file never carries routing headers, so in that
+  case the copy is written on Linux and macOS too.
 
 Reload VS Code afterwards. `ug` leaves `config.toml` alone when it already uses another
 `model_provider`. `ug revert` removes only the keys `ug` added and restores a `model` you
@@ -399,7 +404,7 @@ preferences are ignored and their files are left untouched. See the bundled
 | Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) |
 | Claude Code VS Code extension | the three `claudeCode.*` keys above in each profile's VS Code `settings.json`, and `~/.ucode/vscode-claude-extension.json` (what `ug` changed, for `ug revert`) |
-| Codex VS Code extension | `model_provider`, `model` and `[model_providers.Databricks]` in `~/.codex/config.toml` when no machine-wide file carries them, and `~/.ucode/vscode-codex-extension.json` (what `ug` changed, for `ug revert`) |
+| Codex VS Code extension | `model_provider`, `model` and `[model_providers.Databricks]` (with the provider or Unity Catalog routing header when one is set) in `~/.codex/config.toml` when no machine-wide file carries them, the routed source's model list in `~/.ucode/codex-model-catalog.json`, and `~/.ucode/vscode-codex-extension.json` (what `ug` changed, for `ug revert`) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
