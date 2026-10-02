@@ -307,12 +307,32 @@ class TestConfigure:
 
     def test_does_not_replace_another_wrapper(self, tmp_path, wrapper, messages):
         install = _install(tmp_path)
-        _write_settings(install, {WRAPPER_KEY: "C:/tools/my-wrapper.exe"})
+        theirs = tmp_path / "tools" / "my-wrapper.exe"
+        theirs.parent.mkdir()
+        theirs.write_text("", encoding="utf-8")
+        _write_settings(install, {WRAPPER_KEY: str(theirs)})
 
         _configure(install)
 
-        assert _settings(install) == {WRAPPER_KEY: "C:/tools/my-wrapper.exe"}
+        assert _settings(install) == {WRAPPER_KEY: str(theirs)}
         assert "my-wrapper.exe" in messages["warning"][0]
+
+    def test_replaces_a_wrapper_that_no_longer_exists(self, tmp_path, wrapper, messages):
+        # e.g. a hand-made wrapper that was uninstalled: the extension fails with "native
+        # binary not found" until the setting changes.
+        install = _install(tmp_path)
+        gone = str(tmp_path / "bin" / "claude-ug.exe")
+        _write_settings(install, {WRAPPER_KEY: gone, LOGIN_KEY: True})
+
+        _configure(install)
+
+        assert _settings(install)[WRAPPER_KEY] == WRAPPER
+        assert messages["warning"] == []
+        assert "no longer exists" in messages["note"][0]
+        assert len(messages["success"]) == 1
+        # Revert removes the setting rather than putting the dead wrapper back.
+        assert vscode.revert_claude_extension() == "restored"
+        assert WRAPPER_KEY not in _settings(install)
 
     def test_moves_its_own_wrapper_to_the_current_install(self, tmp_path, wrapper, messages):
         install = _install(tmp_path)

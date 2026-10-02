@@ -124,7 +124,9 @@ for the extension and points every VS Code profile that has it at Unity Gateway:
 
 Reload VS Code afterwards. `ug` leaves a `settings.json` alone when it contains comments
 (it prints the lines to add instead) or when the extension already uses a different
-wrapper. `ug revert` removes only the settings `ug` added.
+wrapper that still exists. A wrapper whose file is gone (for example one you uninstalled)
+only breaks the extension, so `ug` replaces it and says so. `ug revert` removes only the
+settings `ug` added.
 
 In the extension you get the gateway, automatic token refresh, the admin's model list and
 `ug`'s MCP servers. Smart routing needs `ug claude`. Run `ug configure` again after your

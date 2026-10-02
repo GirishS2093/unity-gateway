@@ -223,6 +223,12 @@ def _is_ug_wrapper(value: object) -> bool:
     return Path(value.strip()).stem.lower() == WRAPPER_COMMAND
 
 
+def _wrapper_exists(value: str) -> bool:
+    """Whether a wrapper setting still names a program: a file, or a command on PATH."""
+    value = value.strip()
+    return Path(value).expanduser().is_file() or shutil.which(value) is not None
+
+
 def _record_path() -> Path:
     return config_io.APP_DIR / _RECORD_NAME
 
@@ -290,13 +296,22 @@ def _configure_install(install: SettingsTarget, wrapper: str, record: dict[str, 
         )
         return
     current = doc.get(WRAPPER_SETTING)
+    dead_wrapper = False
     if current and not _is_ug_wrapper(current):
-        print_warning(
-            f"{install.name}: the Claude Code extension already launches through {current}; "
-            f"ug left it alone. To use Unity Gateway instead, set {WRAPPER_SETTING} to {wrapper} "
-            f"in {path}."
+        if not isinstance(current, str) or _wrapper_exists(current):
+            print_warning(
+                f"{install.name}: the Claude Code extension already launches through {current}; "
+                f"ug left it alone. To use Unity Gateway instead, set {WRAPPER_SETTING} to "
+                f"{wrapper} in {path}."
+            )
+            return
+        # A wrapper that no longer exists only breaks the extension ("native binary not
+        # found"), so take it over; `ug revert` then removes the setting rather than restoring it.
+        dead_wrapper = True
+        print_note(
+            f"{install.name}: the Claude Code extension's wrapper {current} no longer exists; "
+            "replacing it with Unity Gateway's."
         )
-        return
     changes = {
         key: value
         for key, value in _desired_settings(doc, wrapper).items()
@@ -307,7 +322,13 @@ def _configure_install(install: SettingsTarget, wrapper: str, record: dict[str, 
         return
     entry = record.setdefault(str(path), {"set": {}, "previous": {}})
     for key, value in changes.items():
-        if key in doc and key not in entry["previous"] and key not in entry["set"]:
+        keep_previous = not (dead_wrapper and key == WRAPPER_SETTING)
+        if (
+            keep_previous
+            and key in doc
+            and key not in entry["previous"]
+            and key not in entry["set"]
+        ):
             entry["previous"][key] = doc[key]
         doc[key] = value
         entry["set"][key] = value
